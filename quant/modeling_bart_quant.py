@@ -531,11 +531,11 @@ class BartPretrainedModel(PreTrainedModel):
 
     def _init_weights(self, module):
         std = self.config.init_std
-        if isinstance(module, nn.Linear) or isinstance(module, QuantizeLinear):
+        if isinstance(module, (nn.Linear, QuantizeLinear)):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
                 module.bias.data.zero_()
-        elif isinstance(module, nn.Embedding) or isinstance(module, QuantizeEmbedding):
+        elif isinstance(module, (nn.Embedding, QuantizeEmbedding)):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
@@ -548,15 +548,14 @@ class BartPretrainedModel(PreTrainedModel):
     def dummy_inputs(self):
         pad_token = self.config.pad_token_id
         input_ids = torch.tensor([[0, 6, 10, 4, 2], [0, 8, 12, 2, pad_token]], device=self.device)
-        dummy_inputs = {
+        return {
             "attention_mask": input_ids.ne(pad_token),
             "input_ids": input_ids,
         }
-        return dummy_inputs
 
 
 class PretrainedBartModel(BartPretrainedModel):
-    def __init_subclass__(self):
+    def __init_subclass__(cls):
         warnings.warn(
             "The class `PretrainedBartModel` has been depreciated, please use `BartPretrainedModel` instead.",
             FutureWarning,
@@ -844,11 +843,10 @@ class BartEncoder(BartPretrainedModel):
         all_attentions = () if output_attentions else None
 
         # check if head_mask has a correct number of layers specified if desired
-        if head_mask is not None:
-            if head_mask.size()[0] != (len(self.layers)):
-                raise ValueError(
-                    f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
-                )
+        if head_mask is not None and head_mask.size()[0] != (len(self.layers)):
+            raise ValueError(
+                f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
+            )
 
         for idx, encoder_layer in enumerate(self.layers):
             if output_hidden_states:
@@ -888,10 +886,18 @@ class BartEncoder(BartPretrainedModel):
         if output_hidden_states:
             encoder_states = encoder_states + (hidden_states,)
 
-        if not return_dict:
-            return tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
-        return BaseModelOutput(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
+        return (
+            BaseModelOutput(
+                last_hidden_state=hidden_states,
+                hidden_states=encoder_states,
+                attentions=all_attentions,
+            )
+            if return_dict
+            else tuple(
+                v
+                for v in [hidden_states, encoder_states, all_attentions]
+                if v is not None
+            )
         )
 
 
@@ -1082,11 +1088,10 @@ class BartDecoder(BartPretrainedModel):
 
         # check if head_mask/cross_attn_head_mask has a correct number of layers specified if desired
         for attn_mask, mask_name in zip([head_mask, cross_attn_head_mask], ["head_mask", "cross_attn_head_mask"]):
-            if attn_mask is not None:
-                if attn_mask.size()[0] != (len(self.layers)):
-                    raise ValueError(
-                        "The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
-                    )
+            if attn_mask is not None and attn_mask.size()[0] != (len(self.layers)):
+                raise ValueError(
+                    "The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
+                )
 
         for idx, decoder_layer in enumerate(self.layers):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
@@ -1154,18 +1159,26 @@ class BartDecoder(BartPretrainedModel):
             all_hidden_states += (hidden_states,)
 
         next_cache = next_decoder_cache if use_cache else None
-        if not return_dict:
-            return tuple(
+        return (
+            BaseModelOutputWithPastAndCrossAttentions(
+                last_hidden_state=hidden_states,
+                past_key_values=next_cache,
+                hidden_states=all_hidden_states,
+                attentions=all_self_attns,
+                cross_attentions=all_cross_attentions,
+            )
+            if return_dict
+            else tuple(
                 v
-                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions]
+                for v in [
+                    hidden_states,
+                    next_cache,
+                    all_hidden_states,
+                    all_self_attns,
+                    all_cross_attentions,
+                ]
                 if v is not None
             )
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=hidden_states,
-            past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
-            cross_attentions=all_cross_attentions,
         )
 
 
@@ -1283,18 +1296,19 @@ class BartModel(BartPretrainedModel):
             return_dict=return_dict,
         )
 
-        if not return_dict:
-            return decoder_outputs + encoder_outputs
-
-        return Seq2SeqModelOutput(
-            last_hidden_state=decoder_outputs.last_hidden_state,
-            past_key_values=decoder_outputs.past_key_values,
-            decoder_hidden_states=decoder_outputs.hidden_states,
-            decoder_attentions=decoder_outputs.attentions,
-            cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+        return (
+            Seq2SeqModelOutput(
+                last_hidden_state=decoder_outputs.last_hidden_state,
+                past_key_values=decoder_outputs.past_key_values,
+                decoder_hidden_states=decoder_outputs.hidden_states,
+                decoder_attentions=decoder_outputs.attentions,
+                cross_attentions=decoder_outputs.cross_attentions,
+                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+                encoder_hidden_states=encoder_outputs.hidden_states,
+                encoder_attentions=encoder_outputs.attentions,
+            )
+            if return_dict
+            else decoder_outputs + encoder_outputs
         )
 
 
@@ -1555,7 +1569,10 @@ class BartForSequenceClassification(BartPretrainedModel):
             if self.config.problem_type is None:
                 if self.config.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.config.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                elif self.config.num_labels > 1 and labels.dtype in [
+                    torch.long,
+                    torch.int,
+                ]:
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"

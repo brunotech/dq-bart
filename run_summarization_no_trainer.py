@@ -293,13 +293,12 @@ def parse_args():
         assert args.distill_decoder == 1
     if args.dataset_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a dataset name or a training/validation file.")
-    else:
-        if args.train_file is not None:
-            extension = args.train_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
-        if args.validation_file is not None:
-            extension = args.validation_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+    if args.train_file is not None:
+        extension = args.train_file.split(".")[-1]
+        assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
+    if args.validation_file is not None:
+        extension = args.validation_file.split(".")[-1]
+        assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
     args.output_dir = f'./output_{args.dataset_name}/{args.weight_bits}_{args.input_bits}_{args.distill_encoder}_{args.distill_decoder}_{args.num_train_epochs}_{args.learning_rate}_fp16'
     if args.new_distill_map:
@@ -312,27 +311,26 @@ def parse_args():
     if args.teacher_model is None:
         args.teacher_model = args.model_name_or_path
 
-    if args.dataset_name == "xsum":
-        args.length_penalty = 1.0
-        args.max_length = 62
-        args.min_length = 11
-        args.num_beams = 6
-    elif args.dataset_name == "cnn_dailymail":
+    if args.dataset_name == "cnn_dailymail":
         args.length_penalty = 2.0
         args.max_length = 142
         args.min_length = 56
         args.num_beams = 4
+    elif args.dataset_name == "xsum":
+        args.length_penalty = 1.0
+        args.max_length = 62
+        args.min_length = 11
+        args.num_beams = 6
     else:
         assert False, f'args error: dataset name {args.dataset_name}'
     if args.weighted:
-        args.task_weight = 1
         args.logits_weight = 0.8
         args.hid_weight = 3
         args.output_dir += '_weighted'
     else:
-        args.task_weight = 1
         args.logits_weight = 1
         args.hid_weight = 1
+    args.task_weight = 1
     if args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
     return args

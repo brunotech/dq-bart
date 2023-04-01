@@ -35,20 +35,17 @@ class SymQuantizer(torch.autograd.Function):
         # NOTE: dynamic scaling (max_input).
         if layerwise:
             max_input = torch.max(torch.abs(input)).expand_as(input)
+        elif input.ndimension() <= 3:
+            # weight & hidden layer
+            max_input = torch.max(torch.abs(input), dim=-1, keepdim=True)[0].expand_as(input).detach()
+        elif input.ndimension() == 4:
+            # TODO: attention score matrix, calculate alpha / beta per head
+            tmp = input.view(input.shape[0], input.shape[1], -1)
+            max_input = torch.max(torch.abs(tmp), dim=-1, keepdim=True)[0].unsqueeze(-1).expand_as(input).detach()
         else:
-            if input.ndimension() <= 3:
-                # weight & hidden layer
-                max_input = torch.max(torch.abs(input), dim=-1, keepdim=True)[0].expand_as(input).detach()
-            elif input.ndimension() == 4:
-                # TODO: attention score matrix, calculate alpha / beta per head
-                tmp = input.view(input.shape[0], input.shape[1], -1)
-                max_input = torch.max(torch.abs(tmp), dim=-1, keepdim=True)[0].unsqueeze(-1).expand_as(input).detach()
-            else:
-                raise ValueError
+            raise ValueError
         s = (2 ** (num_bits - 1) - 1) / max_input
-        output = torch.round(input * s).div(s)
-
-        return output
+        return torch.round(input * s).div(s)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -86,26 +83,22 @@ class AsymQuantizer(torch.autograd.Function):
         if layerwise:
             alpha = (input.max() - input.min()).detach()
             beta = input.min().detach()
-        else:
-            if input.ndimension() <= 3:
-                # weight & hidden layer
-                alpha = (input.max(dim=-1, keepdim=True)[0] - input.min(dim=-1, keepdim=True)[0]).expand_as(input).detach()
-                beta = input.min(dim=-1, keepdim=True)[0].expand_as(input).detach()
-            elif input.ndimension() == 4:
-                # TODO: attention score matrix, calculate alpha / beta per head
-                tmp = input.view(input.shape[0], input.shape[1], -1)
-                alpha = (tmp.max(dim=-1, keepdim=True)[0].unsqueeze(-1) - \
+        elif input.ndimension() <= 3:
+            # weight & hidden layer
+            alpha = (input.max(dim=-1, keepdim=True)[0] - input.min(dim=-1, keepdim=True)[0]).expand_as(input).detach()
+            beta = input.min(dim=-1, keepdim=True)[0].expand_as(input).detach()
+        elif input.ndimension() == 4:
+            # TODO: attention score matrix, calculate alpha / beta per head
+            tmp = input.view(input.shape[0], input.shape[1], -1)
+            alpha = (tmp.max(dim=-1, keepdim=True)[0].unsqueeze(-1) - \
                             tmp.min(dim=-1, keepdim=True)[0].unsqueeze(-1)).expand_as(input).detach()
-                beta = tmp.min(dim=-1, keepdim=True)[0].unsqueeze(-1).expand_as(input).detach()
-            else:
-                raise ValueError
+            beta = tmp.min(dim=-1, keepdim=True)[0].unsqueeze(-1).expand_as(input).detach()
+        else:
+            raise ValueError
         input_normalized = (input - beta) / (alpha + 1e-8)
         s = (2**num_bits - 1)
         quant_input = torch.round(input_normalized * s).div(s)
-        output = quant_input * (alpha + 1e-8) + beta
-
-
-        return output
+        return quant_input * (alpha + 1e-8) + beta
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -142,7 +135,6 @@ class TwnQuantizer(torch.autograd.Function):
             neg = (input < -thres).float()
             mask = (input.abs() > thres).float()
             alpha = (mask * input).abs().sum() / mask.sum()
-            result = alpha * pos - alpha * neg
         else: # row-wise only for embed / weight
             n = input[0].nelement()
             m = input.data.norm(p=1, dim=1).div(n)
@@ -151,9 +143,7 @@ class TwnQuantizer(torch.autograd.Function):
             neg = (input < -thres).float()
             mask = (input.abs() > thres).float()
             alpha = ((mask * input).abs().sum(dim=1) / mask.sum(dim=1)).view(-1, 1)
-            result = alpha * pos - alpha * neg
-
-        return result
+        return alpha * pos - alpha * neg
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -175,10 +165,7 @@ class QuantizeLinear(nn.Linear):
         self.quantize_act = config.quantize_act
         self.weight_bits = config.weight_bits
         self.quantize_act = config.quantize_act
-        if self.weight_bits == 2:
-            self.weight_quantizer = TwnQuantizer
-        else:
-            self.weight_quantizer = SymQuantizer
+        self.weight_quantizer = TwnQuantizer if self.weight_bits == 2 else SymQuantizer
         self.register_buffer('weight_clip_val', torch.tensor([-config.clip_val, config.clip_val]))
         if self.quantize_act:
             self.input_bits = config.input_bits
@@ -191,7 +178,7 @@ class QuantizeLinear(nn.Linear):
         # quantize input
         input = self.act_quantizer.apply(input, self.act_clip_val, self.input_bits, True)
         out = nn.functional.linear(input, weight)
-        if not self.bias is None:
+        if self.bias is not None:
             out += self.bias.view(1, -1).expand_as(out)
 
         return out
@@ -204,16 +191,17 @@ class QuantizeEmbedding(nn.Embedding):
         super(QuantizeEmbedding, self).__init__(*kargs, padding_idx = padding_idx)
         self.weight_bits = config.weight_bits
         self.layerwise = False
-        if self.weight_bits == 2:
-            self.weight_quantizer = TwnQuantizer
-        else:
-            self.weight_quantizer = SymQuantizer
-
+        self.weight_quantizer = TwnQuantizer if self.weight_bits == 2 else SymQuantizer
         self.register_buffer('weight_clip_val', torch.tensor([-config.clip_val, config.clip_val]))
 
     def forward(self, input):
         weight = self.weight_quantizer.apply(self.weight, self.weight_clip_val, self.weight_bits,self.layerwise)
-        out = nn.functional.embedding(
-            input, weight, self.padding_idx, self.max_norm,
-            self.norm_type, self.scale_grad_by_freq, self.sparse)
-        return out
+        return nn.functional.embedding(
+            input,
+            weight,
+            self.padding_idx,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.sparse,
+        )

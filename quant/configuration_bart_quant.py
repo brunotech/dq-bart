@@ -216,7 +216,7 @@ class BartConfig(PretrainedConfig):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         config_file = os.path.join(pretrained_model_name_or_path, CONFIG_NAME)
-        logger.info("loading configuration file {}".format(config_file))
+        logger.info(f"loading configuration file {config_file}")
         # Load config
         config = cls.from_json_file(config_file)
 
@@ -254,8 +254,7 @@ class BartConfig(PretrainedConfig):
 
     def to_dict(self):
         """Serializes this instance to a Python dictionary."""
-        output = copy.deepcopy(self.__dict__)
-        return output
+        return copy.deepcopy(self.__dict__)
 
     def to_json_string(self):
         """Serializes this instance to a JSON string."""
